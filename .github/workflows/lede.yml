@@ -1,60 +1,118 @@
-name: Build OpenWrt 22.03 Packages
+name: Build OpenWrt 22.03 Third-party Packages
 
 on:
   workflow_dispatch:
     inputs:
-      package_name:
-        description: 'Package name to build (e.g. luci-app-adguardhome)'
+      plugins:
+        description: 'Comma-separated list of plugins to build (e.g. luci-app-onliner)'
         required: true
+        default: 'luci-app-onliner'
+      feed_url:
+        description: 'URL of the third-party feed'
+        required: true
+        default: 'https://github.com/rufengsuixing/luci-app-onliner.git'
+      feed_branch:
+        description: 'Branch of the third-party feed'
+        required: false
+        default: 'main'
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-  build-package:
+  build-packages:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      matrix:
+        plugins: ${{ fromJSON(format('[{{0}}]', join('", "', split(github.event.inputs.plugins || 'luci-app-adguardhome', ',')))) }}
 
     steps:
     - name: Checkout OpenWrt 22.03
       uses: actions/checkout@v4
       with:
         repository: openwrt/openwrt
-        ref: v22.03.5
+        ref: v22.03.4
         path: openwrt
 
-    - name: Set up dependencies
+    - name: Set up build environment
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
           gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev \
           libssl-dev python3 python3-distutils python3-setuptools python3-dev rsync \
           subversion swig time unzip wget xsltproc zlib1g-dev
+        
+        # 设置 ccache 缓存
+        echo "export PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+        echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
+        mkdir -p $GITHUB_WORKSPACE/ccache
+        ccache --max-size=2G
+
+    - name: Set up ccache caching
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ${{ runner.os }}-ccache-${{ hashFiles('openwrt/feeds.conf.default') }}
+        restore-keys: |
+          ${{ runner.os }}-ccache-
 
     - name: Configure feeds
       working-directory: ./openwrt
       run: |
+        # 创建 feeds 配置文件
+        cat > feeds.conf.default <<EOL
+        src-git packages https://git.openwrt.org/feed/packages.git^b0e3c0f2c7f5c9a5e6a8d4c3b2a1a0f9e8d7c6b
+        src-git luci https://git.openwrt.org/project/luci.git^9d6e1b8d7c5f4e3d2b1a0f9e8d7c6b5a4f3e2d1c
+        src-git routing https://git.openwrt.org/feed/routing.git
+        src-git telephony https://git.openwrt.org/feed/telephony.git
+        EOL
+        
+        # 添加第三方源 (通过 URL)
+        FEED_URL="${{ github.event.inputs.feed_url || 'https://github.com/kenzok8/openwrt-packages' }}"
+        FEED_BRANCH="${{ github.event.inputs.feed_branch || 'main' }}"
+        
+        # 添加带分支的源（如果指定了分支）
+        if [ -n "$FEED_BRANCH" ]; then
+          echo "src-git custom $FEED_URL;$FEED_BRANCH" >> feeds.conf.default
+        else
+          echo "src-git custom $FEED_URL" >> feeds.conf.default
+        fi
+        
+        # 显示配置内容
+        echo "Feeds configuration:"
+        cat feeds.conf.default
+        
+        # 更新和安装所有源
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Configure package selection
+    - name: Configure build
       working-directory: ./openwrt
       run: |
-        # 创建基础配置
+        # 创建默认配置
         make defconfig
         
-        # 启用指定包
-        PACKAGE_NAME="${{ github.event.inputs.package_name || 'luci-app-adguardhome' }}"
-        echo "CONFIG_PACKAGE_${PACKAGE_NAME}=y" >> .config
-        echo "CONFIG_PACKAGE_${PACKAGE_NAME}-src=n" >> .config
+        # 启用指定插件
+        for plugin in ${{ join(matrix.plugins, ' ') }}; do
+          echo "Enabling plugin: $plugin"
+          echo "CONFIG_PACKAGE_${plugin}=y" >> .config
+          echo "CONFIG_PACKAGE_${plugin}-src=n" >> .config
+        done
         
         # 应用配置
         make defconfig
+        
+        # 显示插件配置状态
+        for plugin in ${{ join(matrix.plugins, ' ') }}; do
+          grep "CONFIG_PACKAGE_${plugin}" .config || echo "Plugin not found: ${plugin}"
+        done
 
     - name: Download sources
       working-directory: ./openwrt
       run: |
         make download -j$(nproc)
         find dl -size -1024c -exec rm -f {} \;
+        df -h
 
     - name: Build toolchain
       working-directory: ./openwrt
@@ -62,13 +120,15 @@ jobs:
         make tools/compile -j$(nproc)
         make toolchain/compile -j$(nproc)
 
-    - name: Build package
+    - name: Build packages
       working-directory: ./openwrt
       run: |
-        PACKAGE_NAME="${{ github.event.inputs.package_name || 'luci-app-adguardhome' }}"
-        make package/$PACKAGE_NAME/compile -j$(nproc) V=s
+        for plugin in ${{ join(matrix.plugins, ' ') }}; do
+          echo "Building plugin: $plugin"
+          make package/$plugin/compile -j$(nproc) V=s || echo "Build failed for $plugin"
+        done
 
-    - name: Collect packages
+    - name: Collect artifacts
       run: |
         mkdir -p artifacts
         find ./openwrt/bin -name '*.ipk' -exec cp {} artifacts/ \;
@@ -79,5 +139,8 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: openwrt-packages
+        path: artifacts/
+        retention-days: 7
+        if-no-files-found: warn
         path: artifacts/
         retention-days: 7

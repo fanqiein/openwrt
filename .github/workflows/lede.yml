@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       matrix:
-        plugins: ${{ format('[{0}]', join('", "', split(github.event.inputs.plugins || 'luci-app-onliner', ','))) }}
+        plugins: ${{ fromJSON(format('[{{0}}]', join('", "', split(github.event.inputs.plugins || 'luci-app-onliner', ',')))) }}
 
     steps:
     - name: Checkout OpenWrt 22.03
@@ -68,7 +68,7 @@ jobs:
         EOL
         
         # 添加第三方源 (通过 URL)
-        FEED_URL="${{ github.event.inputs.feed_url || 'https://github.com/kenzok8/openwrt-packages' }}"
+        FEED_URL="${{ github.event.inputs.feed_url || 'https://github.com/rufengsuixing/luci-app-onliner.git' }}"
         FEED_BRANCH="${{ github.event.inputs.feed_branch || 'main' }}"
         
         # 添加带分支的源（如果指定了分支）

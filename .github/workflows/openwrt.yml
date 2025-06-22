@@ -1,0 +1,83 @@
+name: Build OpenWrt 22.03 Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Package name to build (e.g. luci-app-adguardhome)'
+        required: true
+  push:
+    branches: [ main ]
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+    - name: Checkout OpenWrt 22.03
+      uses: actions/checkout@v4
+      with:
+        repository: openwrt/openwrt
+        ref: v22.03.5
+        path: openwrt
+
+    - name: Set up dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev \
+          libssl-dev python3 python3-distutils python3-setuptools python3-dev rsync \
+          subversion swig time unzip wget xsltproc zlib1g-dev
+
+    - name: Configure feeds
+      working-directory: ./openwrt
+      run: |
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Configure package selection
+      working-directory: ./openwrt
+      run: |
+        # 创建基础配置
+        make defconfig
+        
+        # 启用指定包
+        PACKAGE_NAME="${{ github.event.inputs.package_name || 'luci-app-adguardhome' }}"
+        echo "CONFIG_PACKAGE_${PACKAGE_NAME}=y" >> .config
+        echo "CONFIG_PACKAGE_${PACKAGE_NAME}-src=n" >> .config
+        
+        # 应用配置
+        make defconfig
+
+    - name: Download sources
+      working-directory: ./openwrt
+      run: |
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Build toolchain
+      working-directory: ./openwrt
+      run: |
+        make tools/compile -j$(nproc)
+        make toolchain/compile -j$(nproc)
+
+    - name: Build package
+      working-directory: ./openwrt
+      run: |
+        PACKAGE_NAME="${{ github.event.inputs.package_name || 'luci-app-adguardhome' }}"
+        make package/$PACKAGE_NAME/compile -j$(nproc) V=s
+
+    - name: Collect packages
+      run: |
+        mkdir -p artifacts
+        find ./openwrt/bin -name '*.ipk' -exec cp {} artifacts/ \;
+        echo "Built packages:"
+        ls -lh artifacts/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: openwrt-packages
+        path: artifacts/
+        retention-days: 7

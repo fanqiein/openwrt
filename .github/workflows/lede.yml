@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       matrix:
-        plugins: ${{ fromJSON(format('[{{0}}]', join('", split(github.event.inputs.plugins || 'luci-app-onliner')))) }}
+        plugins: ${{ format('[{0}]', join('", "', split(github.event.inputs.plugins || 'luci-app-onliner', ','))) }}
 
     steps:
     - name: Checkout OpenWrt 22.03
